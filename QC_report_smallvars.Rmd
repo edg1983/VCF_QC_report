@@ -1,0 +1,162 @@
+---
+title: "Small variants QC"
+author: "Edoardo Giacopuzzi"
+date: "`r format(Sys.time(), '%d %B, %Y')`"
+output: html_document
+params:
+  vcf_stats: "VCF.stats"
+  chr_counts: "VCF_varsPerChrom.stats"
+  ancestry: "ancestry.tsv"
+---
+
+```{r setup, include=FALSE, dev="CairoPNG"}
+#R -e "rmarkdown::render('script.Rmd',output_file='output.html')"
+knitr::opts_chunk$set(dev="CairoPNG")
+library(ggplot2)
+library(dplyr)
+library(tidyr)
+library(knitr)
+library(patchwork)
+source("Read_VCF_stats.R")
+x_axis_text_45 <- theme(axis.text.x = element_text(angle=45, hjust=1))
+chr_order <- paste("chr",c(1:22,"X","Y","M"), sep = "")
+```
+
+```{r load data, echo=F, include=FALSE}
+vcf_stats <- readVCFstat(params$vcf_stats)
+chr_counts <- read.csv(params$chr_counts, sep="\t", header=F)
+colnames(chr_counts) <- c("chrom","size","n_vars")
+chr_counts$vars_per_Mb <- chr_counts$n_vars / (chr_counts$size / 1000000)
+chr_counts$chrom <- factor(chr_counts$chrom, levels = chr_order)
+ancestry <- read.csv(params$ancestry, sep="\t",header=T)
+colnames(ancestry)[1] <- "sample"
+```
+
+# Variant summary
+
+## Variants count 
+```{r summary_var, echo=F}
+kable(vcf_stats$SN, caption = "Overall variants count")
+```
+
+## Ts/Tv
+```{r tsv_t , echo=F}
+kable(vcf_stats$TSTV, caption = "Global Ts/Tv stat")
+```
+
+# Var per chrom
+
+```{r var_per_chrom, echo=F}
+ggplot(chr_counts, aes(x=chrom, y=vars_per_Mb)) + geom_bar(stat="identity") + x_axis_text_45 +
+  scale_y_continuous(breaks = seq(0,max(chr_counts$vars_per_Mb),2000))
+```
+
+# Var by AF
+
+```{r var_by_AF, echo=F}
+AF_df <- vcf_stats$AF %>% select(Allele_freq,n_SNPs,n_indels)
+AF_df$AF_bin <- cut(AF_df$Allele_freq, breaks=c(0,0.01,0.05,0.1,0.25,0.5,1), labels=c("<= 0.01", "1 < x <= 0.05", "0.05 < x <= 0.1", "0.1 < x <= 0.25", "0.25 < x <= 0.5", "0.5 < x <= 1"), include.lowest=T)
+AF_df <- AF_df %>% group_by(AF_bin) %>% summarise(SNPs=sum(n_SNPs), indels = sum(n_indels)) %>% gather(key="var_type", value="n_var", SNPs:indels)
+ggplot(AF_df, aes(x=AF_bin, y=n_var/1000000)) + geom_bar(stat="identity") + facet_wrap(~var_type, scales = "free_y") + x_axis_text_45 + labs(y="M vars", x="cohort AF")
+```
+
+# Var by QUAL
+```{r var_by_QUAL, echo=F}
+QUAL_df <- vcf_stats$QUAL %>% arrange(desc(quality)) %>% mutate(cum_SNPs=cumsum(n_SNPs),cum_indels=cumsum(n_indels)) %>% select(quality, cum_SNPs, cum_indels) %>% gather(key = "var_type", value = "n_var", cum_SNPs:cum_indels)
+ggplot(QUAL_df, aes(x=quality, y=n_var)) + geom_line() + facet_wrap(~var_type, scales = "free_y") + labs(y="N vars QUAL <= x") + labs(title="Cumulative distribution")
+QUAL_dist <- vcf_stats$QUAL %>% select(quality, n_SNPs, n_indels) %>% gather(key = "var_type", value = "n_var", n_SNPs:n_indels)
+ggplot(QUAL_dist, aes(x=quality,y=n_var)) + geom_bar(stat="identity") + facet_wrap(~var_type, scales = "free_y") + labs(title="Distribution across QUAL")
+```
+
+# INDELS size
+```{r indels_size, echo=F}
+vcf_stats$IDD$length <- as.numeric(vcf_stats$IDD$length)
+INSDEL_df <- vcf_stats$IDD %>% select(length, n_sites, n_genotypes) %>% gather(key = "group", value = "n_var", n_sites:n_genotypes)
+ggplot(INSDEL_df, aes(x=length, y=n_var/1000)) + geom_bar(stat="identity") + facet_wrap(~group, scales = "free_y") + labs(y="N (x1000)")
+```
+
+# Nucleotide changes
+```{r nt_changes, echo=F}
+ggplot(vcf_stats$ST, aes(x=type, y=count/1000)) + geom_bar(stat="identity") + labs(y="N vars (x1000)")
+```
+
+# Coverage distribution across genotypes
+Coverage above 100X not shown
+
+```{r DP_dist, echo=F, warning=F}
+DP_df <- vcf_stats$DP %>% filter(bin != ">500")
+DP_df$bin <- as.numeric(DP_df$bin)
+DP_df <- DP_df %>% filter(bin > 0) %>% arrange(desc(bin)) %>% mutate(cum_genos=cumsum(n_genotypes), tot_genos=sum(n_genotypes)) %>% select(bin, cum_genos, tot_genos) %>% mutate(cum_pct=cum_genos/tot_genos)
+ggplot(DP_df, aes(x=as.numeric(bin), y=cum_pct)) + 
+  geom_line() + geom_vline(xintercept = c(10,20), linetype="dashed") + 
+  scale_x_continuous(limits = c(0,100), breaks=seq(0,100,10)) +
+  scale_y_continuous(breaks=seq(0,1,0.1)) +
+  labs(x="DP", y="fraction genos with DP >= x", title="Cumulative distribution of genos") 
+ggplot(vcf_stats$DP %>% filter(bin > 0), aes(x=as.numeric(bin), y=n_genotypes/1000000)) + 
+  geom_bar(stat="identity") + lims(x=c(0,100)) + 
+  labs(x="DP", y="M genotypes", title = "Distribution across DP")
+
+```
+
+# HWE plot
+```{r HWE_plot, echo=F, warning=F, message=F}
+HWE_df <- vcf_stats$HWE %>% filter(`1st_ALT_AF` > 0) %>% 
+  mutate(expected_hwe=2*`1st_ALT_AF`*(1-`1st_ALT_AF`)) %>%
+  gather(key="group",value="Het_fraction",`25th_percentile`:expected_hwe)
+ggplot(HWE_df, aes(x=`1st_ALT_AF`, y=Het_fraction, color=group)) + geom_smooth(size=0.8) +
+  scale_color_manual(values=c("lightblue","lightblue","orange","blue")) + theme_classic() + 
+  labs(color="lines", title="Observed vs expected under HWE")
+```
+
+# Per sample statistics
+## Variant counts
+```{r sample_var_counts, echo=F, warning=F, message=F}
+PSC_df <- merge(vcf_stats$PSC,  ancestry[,c("sample","predicted_ancestry")], by="sample", all.x=T)
+PSC_df <- PSC_df %>% select(sample, predicted_ancestry, nNonRefHom, nHets, nIndels) %>%
+  mutate(nSNVs=nNonRefHom + nHets) %>% arrange(predicted_ancestry, sample) %>% mutate(sample_order=row_number()) %>%
+  gather(key="var_type",value="n_vars", nIndels:nSNVs)
+ggplot(PSC_df, aes(x=sample_order, y=n_vars/1000, fill=predicted_ancestry)) + geom_bar(stat="identity") +
+  theme_classic() + scale_y_continuous(expand=c(0,0)) +
+  labs(title="Per sample variant counts", fill="Ancestry", x="samples", y="N vars (x1000)") +
+  theme(axis.text.x = element_blank(), axis.ticks.x = element_blank()) +
+  facet_wrap(~var_type, scales = "free_y")
+```
+
+## Ts/Tv
+```{r sample_TsTv, echo=F, warning=F, message=F}
+PSC_df <- merge(vcf_stats$PSC,  ancestry[,c("sample","predicted_ancestry")], by="sample", all.x=T)
+PSC_df <- PSC_df %>% select(sample, predicted_ancestry, nTransitions, nTransversions) %>%
+  mutate(TsTv= nTransitions / nTransversions) %>% arrange(predicted_ancestry, sample) %>% mutate(sample_order=row_number())
+ggplot(PSC_df, aes(x=sample_order, y=TsTv, color=predicted_ancestry)) + geom_point() +
+  theme_classic() + scale_y_continuous(limits =c(1.9,2.2),expand=c(0,0)) +
+  labs(title="Per sample Ts/Tv ratio", subtitle="Dashed lines represent expected Ts/Tv for WGS", color="Ancestry", x="samples", y="Ts/Tv") +
+  theme(axis.text.x = element_blank(), axis.ticks.x = element_blank()) +
+  geom_hline(yintercept = c(2,2.1), linetype="dashed")
+```
+
+## Missing and het rate
+```{r miss_het_rate, echo=F, warning=F, message=F}
+PSC_df<- vcf_stats$PSC %>% mutate(pct_hets = nHets/(nNonRefHom + nHets + nRefHom), pct_missing = nMissing / (nNonRefHom + nRefHom))
+PSC_df <- merge(PSC_df, ancestry[,c("sample","predicted_ancestry")], by="sample", all.x=T)
+PSC_df$cov_cut <- cut(PSC_df$avg_depth, breaks = c(0,10,20,30,50,max(PSC_df$avg_depth)), include.lowest = T)
+PSC_df <- PSC_df %>% arrange(cov_cut, sample) %>% mutate(sample_order=row_number())
+ggplot(PSC_df, aes(x=reorder(sample_order,cov_cut), y=pct_missing, fill=cov_cut)) + geom_bar(stat="identity") +
+  theme_classic() + scale_y_continuous(breaks=seq(0,0.17,0.02), expand=c(0,0)) +
+  labs(title="Fraction of missing genotypes", fill="Avg depth", x="samples") +
+  theme(axis.text.x = element_blank(), axis.ticks.x = element_blank())
+PSC_df <- PSC_df %>% arrange(predicted_ancestry, sample) %>% mutate(sample_order=row_number())
+ggplot(PSC_df, aes(x=sample_order, y=pct_hets, fill=predicted_ancestry)) + geom_bar(stat="identity") +
+  theme_classic() + scale_y_continuous(breaks=seq(0,0.17,0.02), expand=c(0,0)) +
+  labs(title="Fraction of het genotypes", fill="Ancestry", x="samples") +
+  theme(axis.text.x = element_blank(), axis.ticks.x = element_blank())
+```
+
+## Singletons
+```{r singletons, echo=F, warning=F, message=F}
+PSC_df <- merge(vcf_stats$PSC,  ancestry[,c("sample","predicted_ancestry")], by="sample", all.x=T) %>% 
+  arrange(predicted_ancestry, sample) %>% mutate(sample_order=row_number())
+ggplot(PSC_df, aes(x=sample_order, y=nSingletons/1000, fill=predicted_ancestry)) + geom_bar(stat="identity") +
+  theme_classic() + scale_y_sqrt(expand=c(0,0), breaks=c(10,20,50,100,200,300)) +
+  labs(title="Per sample singletons counts", fill="Ancestry", x="samples", y="N singletons (x1000)") +
+  theme(axis.text.x = element_blank(), axis.ticks.x = element_blank())
+```

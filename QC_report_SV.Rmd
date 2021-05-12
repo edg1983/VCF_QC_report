@@ -1,0 +1,181 @@
+---
+title: "SV QC report"
+author: "Edoardo Giacopuzzi"
+date: "`r format(Sys.time(), '%d %B, %Y')`""
+output: html_document
+params:
+  sample_stats: "SV_per_sample_info.tsv"
+  var_stats: "SV_per_variant_info.tsv"
+  ancestry: "ancestry.tsv"
+---
+
+```{r setup, include=FALSE, dev="CairoPNG"}
+#R -e "rmarkdown::render('script.Rmd',output_file='output.html')"
+knitr::opts_chunk$set(dev="CairoPNG")
+library(ggplot2)
+library(dplyr)
+library(tidyr)
+library(knitr)
+#library(patchwork)
+x_axis_text_45 <- theme(axis.text.x = element_text(angle=45, hjust=1))
+chr_order <- paste("chr",c(1:22,"X","M"), sep = "")
+```
+
+# Data
+- Per sample data generated with
+```
+bcftools query -i 'FILTER == "PASS"' -f '[%CHROM\t%POS\t%SVTYPE\t%SVLEN\t%AF\t%SAMPLE\t%GT\t%SQ\t%DP\t%CN\n]' Thakker.classify.filters.vcf.gz > SV_per_sample_info.tsv
+```
+
+- Per variant data generated with
+```
+bcftools query -i 'FILTER == "PASS"' -H -f '%CHROM\t%POS\t%ID\t%FILTER\t%SVTYPE\t%SVLEN\t%CIPOS95\t%AF\n' Thakker.classify.filters.vcf.gz > SV_per_variant_info.tsv
+```
+
+```{r load_data, include=F}
+vars <- read.csv(params$var_stats, header=T, sep="\t")
+sample_data <- read.csv(params$sample_stats, header=F, sep="\t")
+colnames(sample_data) <- c("CHROM","POS","SVTYPE","SVLEN","AF","SAMPLE","GT","SQ","DP","CN")
+colnames(vars) <- gsub("X\\.+[0-9]+\\.","",colnames(vars))
+vars <- vars %>% filter(AF > 0, CHROM != "chrY")
+sample_data <- sample_data %>% filter(AF > 0, CHROM != "chrY")
+sample_data$CN[sample_data$CN == "."] <- NA
+sample_data$CN <- as.numeric(sample_data$CN)
+vars$SVLEN <- as.numeric(vars$SVLEN)
+vars$SVLEN_cut <- cut(abs(vars$SVLEN), 
+                      breaks=c(0,500,1000,10000,100000,1000000,max(abs(vars$SVLEN), na.rm = T)), 
+                      labels=c("<=500", "501-1000", "1001-10kb", "10kb-100kb", "100kb-1Mb", ">1Mb"),
+                      include.lowest = T)
+sample_data$SVLEN <- as.numeric(sample_data$SVLEN)
+sample_data$SVLEN_cut <- cut(abs(sample_data$SVLEN), 
+                      breaks=c(0,500,1000,10000,100000,1000000,max(abs(sample_data$SVLEN), na.rm = T)), 
+                      labels=c("<=500", "501-1000", "1001-10kb", "10kb-100kb", "100kb-1Mb", ">1Mb"),
+                      include.lowest = T)
+```
+
+# Variant counts
+
+```{r var_counts, echo=FALSE, warning=F, message=F, fig.show="hold", out.width="33%"}
+var_counts <- vars %>% group_by(SVTYPE) %>% summarise(count=n())
+var_counts_by_len <- vars %>% filter(SVTYPE != "BND") %>% group_by(SVTYPE,SVLEN_cut) %>% summarise(count=n())
+ggplot(var_counts, aes(x=SVTYPE, y=count, fill=SVTYPE)) + geom_bar(stat="identity") +
+  labs(y="N vars", title="SV counts")
+ggplot(vars %>% filter(SVTYPE != "BND"), aes(x=SVTYPE, y=abs(SVLEN))) + 
+  geom_violin(aes(fill=SVTYPE), scale = "width") + geom_boxplot(width=0.2, outlier.shape = NA) + 
+  scale_y_log10() + labs(y="SV length (bp)", title="SV length")
+ggplot(var_counts_by_len, aes(x=SVTYPE, y=count, fill=SVLEN_cut)) + 
+  geom_bar(stat="identity", position=position_dodge(0.9)) + 
+  scale_fill_brewer(palette = "Set2") + scale_y_sqrt(breaks=c(100,500,seq(1000,5000,1000))) +
+  labs(y="N vars", title="SV counts by dimension")
+```
+
+# Variant precision
+
+```{r var_precision, echo=FALSE, warning=F, message=F, fig.show="hold", out.width="50%"}
+var_precision <- vars %>% select(SVTYPE,SVLEN_cut,CIPOS95) %>% separate_rows(CIPOS95, sep = ",")
+var_precision$CIPOS95 <- as.numeric(var_precision$CIPOS95)
+var_cum_prec <- vars %>% select(ID,SVTYPE,CIPOS95)
+var_cum_prec$max_ci <- apply(var_cum_prec, 1, function(x) max(as.numeric(unlist(strsplit(x['CIPOS95'],split = ",")))))
+var_cum_prec$max_cut <- cut(var_cum_prec$max_ci, 
+                            breaks=c(0,10,50,100,1000,max(var_cum_prec$max_ci)), 
+                            labels=c("<=10", "11-50", "51-100", "101,1000", ">1000"),
+                            include.lowest=T)
+var_cum_prec <- var_cum_prec %>% group_by(SVTYPE) %>% arrange(max_ci) %>% mutate(rank=row_number()) %>% mutate(pct=rank/max(rank))
+
+ggplot(var_precision, aes(x=CIPOS95)) + geom_histogram() + facet_wrap(~SVTYPE, scales = "free_y") + 
+  scale_y_log10() + x_axis_text_45 + 
+  labs(y="N vars", title="Unvertainty around SV breakpoints", subtitle="CIPOS95 values as reported by lumpy")
+ggplot(var_cum_prec, aes(x=max_cut)) + geom_bar() + facet_wrap(~SVTYPE, scales = "free_y") + x_axis_text_45 + 
+  labs(y="N vars", title="Variant precision", subtitle="Max CIPOS95 value (uncertainty) for each variant")
+ggplot(var_cum_prec, aes(x=max_ci, y=pct, color=SVTYPE)) + 
+  geom_line() + geom_hline(yintercept = 0.9, linetype="dashed") + 
+  scale_x_continuous(breaks=seq(0,600,50)) + 
+  theme_classic() + x_axis_text_45 + 
+  labs(y="fraction vars with precision <= x", title="Distribution of variant precision", subtitle="Distribution of max CIPOS95 value (uncertainty) for each variant")
+```
+
+# AF distribution
+
+```{r AF_distribution, echo=FALSE, warning=F, message=F, fig.width=12}
+var_AF <- vars %>% select(SVTYPE,SVLEN_cut,AF) 
+var_AF <- rbind(var_AF, 
+                vars %>% select(SVTYPE,SVLEN_cut,AF) %>% mutate(SVTYPE="All"))
+var_AF$AF_cut <- cut(var_AF$AF, breaks=c(0,0.01,0.05,0.1,0.5,1), labels = c("<0.01", "0.01-0.05","0.05-0.1","0.1-0.5",">0.5"), include.lowest = T)
+ggplot(var_AF, aes(x=AF, color=SVTYPE)) + geom_density() + 
+  scale_x_sqrt(breaks=c(0.01,0.05,0.1,0.2,0.5,1)) + 
+  theme_classic() + x_axis_text_45 + 
+  labs(title="AF distribution")
+ggplot(var_AF %>% filter(SVTYPE != "BND", !is.na(SVLEN_cut)), aes(x=SVTYPE, y=AF, fill=SVLEN_cut)) + 
+  geom_boxplot(outlier.shape = NA) +
+  scale_y_sqrt(breaks=c(0.01,0.05,0.1,0.2,0.5,1)) + 
+  labs(title="Distribution of AF across SVTYPE and SVLEN", subtitle="Larger variants associate with lower AF, very large ones (>1Mb) are likely recurrent artifacts")
+ggplot(var_AF %>% filter(SVTYPE != "BND", SVTYPE != "All", !is.na(SVLEN_cut)), aes(x=AF_cut, fill=SVTYPE)) + geom_bar() +
+  facet_wrap(~SVLEN_cut, scales = "free_y") + x_axis_text_45 + 
+  labs(y = "N vars", title="Distribution of vars across AF tranches", subtitle="Panels represent SV length tranches")
+
+var_AF_cum <- var_AF %>% group_by(SVTYPE) %>% arrange(AF) %>% mutate(rank=row_number()) %>% mutate(pct=rank/max(rank))
+ggplot(var_AF_cum, aes(x=AF, y=pct, color=SVTYPE)) + geom_line() + 
+  scale_x_continuous(breaks=seq(0,1,0.1)) +
+  geom_vline(xintercept = 0.05, linetype="dashed") + 
+  labs(y = "Fraction vars with AF <= x", title="Cumulative vars distribution across AF", subtitle="Dashed line indicates low freq threshold (5%)")
+
+```
+
+# CN distribution
+
+```{r cn_dstribution, echo=FALSE, warning=F, message=F}
+CN_df <- sample_data %>% filter(SVTYPE != "BND", GT %in% c("0/1","1/0","1/1")) %>% select(SVTYPE,CN,GT)
+ggplot(CN_df, aes(x=SVTYPE, y=CN, fill=GT)) + 
+  geom_violin(scale="width", position=position_dodge(0.9)) +
+  geom_boxplot(width=0.2, outlier.shape = NA, position=position_dodge(0.9)) +
+  geom_hline(yintercept = 2, linetype="dashed") +
+  scale_y_log10() +
+  labs(title="Distribution of CN value across SVTYPE", subtitle="CN = copy-number value from CNVnator. Dashed line represent 2 copies")
+
+```
+
+# SQ distribution
+
+```{r sq_distribution, echo=FALSE, warning=F, message=F, fig.width=12}
+SQ_df <- sample_data %>% filter(GT %in% c("0/1","1/0","1/1")) %>% select(SVTYPE,SQ,GT)
+ggplot(SQ_df, aes(x=SQ, color=GT)) + 
+  geom_density() + facet_wrap(~SVTYPE, scales = "free_y") +
+  lims(x=c(0,5000)) +
+  labs(title="Distribution of SQ value")
+SQ_cum <- SQ_df %>% select(SVTYPE,SQ) %>% arrange(desc(SQ)) %>% mutate(rank=row_number()) %>% mutate(pct=rank/max(rank))
+ggplot(SQ_cum, aes(x=SQ, y=pct)) + 
+  geom_line() + lims(x=c(0,5000)) +
+  geom_vline(xintercept = 50, linetype="dashed") +
+  labs(title="Cumulative SQ distribution", y="fraction of vars with SQ >= x")
+```
+
+# Per sample stats
+
+## N vars per sample
+
+```{r var_per_sample, echo=FALSE, warning=F, message=F}
+sample_SV <- sample_data %>% filter(GT %in% c("0/1","1/0","1/1"))
+sample_SV$AF_cut <- cut(sample_SV$AF, breaks=c(0,0.01,0.05,0.1,0.5,1), labels = c("<0.01", "0.01-0.05","0.05-0.1","0.1-0.5",">0.5"), include.lowest = T)
+sample_SV_counts <- sample_SV %>% select(SVTYPE, SAMPLE) %>% group_by(SAMPLE,SVTYPE) %>% summarise(n=n())
+sample_SV_perLen <- sample_SV %>% select(SVTYPE, SAMPLE, SVLEN_cut) %>% group_by(SAMPLE,SVTYPE,SVLEN_cut) %>% summarise(n=n())
+sample_SV_perAF <- sample_SV %>% select(SVTYPE, SAMPLE, AF_cut) %>% group_by(SAMPLE,SVTYPE,AF_cut) %>% summarise(n=n())
+ggplot(sample_SV_counts, aes(x=SVTYPE, y=n)) + 
+  geom_violin(scale="width") + geom_boxplot(outlier.shape = NA, width = 0.2) +
+  scale_y_sqrt(breaks=c(0,100,250,500,1000,2000,3000,4000)) + 
+  labs(title="SV per sample", y = "N vars")
+```
+
+## Variants per sample by SV length and AF
+
+```{r sample_SV_by_length, echo=FALSE, warning=F, message=F, fig.width=12}
+ggplot(sample_SV_perLen %>% filter(SVTYPE != "BND"), aes(x=SVTYPE, y=n, fill=SVLEN_cut)) + 
+  geom_violin(scale="width",position=position_dodge(0.9)) + 
+  #geom_boxplot(outlier.shape = NA, width = 0.2,position=position_dodge(0.9)) +
+  scale_y_log10(breaks=c(1,5,10,50,100,500,1000)) + 
+  labs(title="SV per sample by length", y = "N vars")
+ggplot(sample_SV_perAF %>% filter(SVTYPE != "BND"), aes(x=SVTYPE, y=n, fill=AF_cut)) + 
+  geom_violin(scale="width",position=position_dodge(0.9)) + 
+  #geom_boxplot(outlier.shape = NA, width = 0.2,position=position_dodge(0.9)) +
+  scale_y_log10(breaks=c(1,5,10,50,100,500,1000)) + 
+  labs(title="SV per sample by cohort AF", y = "N vars")
+```
