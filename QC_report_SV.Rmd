@@ -1,12 +1,11 @@
 ---
 title: "SV QC report"
 author: "Edoardo Giacopuzzi"
-date: "`r format(Sys.time(), '%d %B, %Y')`""
+date: "`r format(Sys.time(), '%d %B, %Y')`"
 output: html_document
 params:
   sample_stats: "SV_per_sample_info.tsv"
   var_stats: "SV_per_variant_info.tsv"
-  ancestry: "ancestry.tsv"
 ---
 
 ```{r setup, include=FALSE, dev="CairoPNG"}
@@ -24,17 +23,17 @@ chr_order <- paste("chr",c(1:22,"X","M"), sep = "")
 # Data
 - Per sample data generated with
 ```
-bcftools query -i 'FILTER == "PASS"' -f '[%CHROM\t%POS\t%SVTYPE\t%SVLEN\t%AF\t%SAMPLE\t%GT\t%SQ\t%DP\t%CN\n]' Thakker.classify.filters.vcf.gz > SV_per_sample_info.tsv
+bcftools query -i 'FILTER == "PASS"' -f '[%CHROM\t%POS\t%SVTYPE\t%SVLEN\t%AF\t%SAMPLE\t%GT\t%SQ\t%DP\t%CN\n]' input_vcf.vcf.gz > SV_per_sample_info.tsv
 ```
 
 - Per variant data generated with
 ```
-bcftools query -i 'FILTER == "PASS"' -H -f '%CHROM\t%POS\t%ID\t%FILTER\t%SVTYPE\t%SVLEN\t%CIPOS95\t%AF\n' Thakker.classify.filters.vcf.gz > SV_per_variant_info.tsv
+bcftools query -i 'FILTER == "PASS"' -H -f '%CHROM\t%POS\t%ID\t%FILTER\t%SVTYPE\t%SVLEN\t%CIPOS95\t%AF\n' input_vcf.vcf.gz > SV_per_variant_info.tsv
 ```
 
 ```{r load_data, include=F}
-vars <- read.csv(params$var_stats, header=T, sep="\t")
-sample_data <- read.csv(params$sample_stats, header=F, sep="\t")
+vars <- read.csv(params$var_stats, header=T, sep="\t", stringsAsFactors=F)
+sample_data <- read.csv(params$sample_stats, header=F, sep="\t", stringsAsFactors=F)
 colnames(sample_data) <- c("CHROM","POS","SVTYPE","SVLEN","AF","SAMPLE","GT","SQ","DP","CN")
 colnames(vars) <- gsub("X\\.+[0-9]+\\.","",colnames(vars))
 vars <- vars %>% filter(AF > 0, CHROM != "chrY")
@@ -78,7 +77,7 @@ var_cum_prec <- vars %>% select(ID,SVTYPE,CIPOS95)
 var_cum_prec$max_ci <- apply(var_cum_prec, 1, function(x) max(as.numeric(unlist(strsplit(x['CIPOS95'],split = ",")))))
 var_cum_prec$max_cut <- cut(var_cum_prec$max_ci, 
                             breaks=c(0,10,50,100,1000,max(var_cum_prec$max_ci)), 
-                            labels=c("<=10", "11-50", "51-100", "101,1000", ">1000"),
+                            labels=c("<=10", "11-50", "51-100", "101-1000", ">1000"),
                             include.lowest=T)
 var_cum_prec <- var_cum_prec %>% group_by(SVTYPE) %>% arrange(max_ci) %>% mutate(rank=row_number()) %>% mutate(pct=rank/max(rank))
 
