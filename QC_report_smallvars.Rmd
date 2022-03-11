@@ -1,16 +1,17 @@
 ---
-title: "Small variants QC"
+title: "`r params$doc_title`"
 author: "Edoardo Giacopuzzi"
 date: "`r format(Sys.time(), '%d %B, %Y')`"
 output: html_document
 params:
+  doc_title: "Small variants QC"
   vcf_stats: "VCF.stats"
   chr_counts: "VCF_varsPerChrom.stats"
   ancestry: "ancestry.tsv"
 ---
 
 ```{r setup, include=FALSE, dev="CairoPNG"}
-#R -e "rmarkdown::render('script.Rmd',output_file='output.html')"
+#R -e "rmarkdown::render('script.Rmd',output_file='output.html',params=list(doc_title="mytitle", ...)"
 knitr::opts_chunk$set(dev="CairoPNG")
 library(ggplot2)
 library(dplyr)
