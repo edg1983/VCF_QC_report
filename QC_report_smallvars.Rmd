@@ -29,7 +29,14 @@ chr_counts <- read.csv(params$chr_counts, sep="\t", header=F)
 colnames(chr_counts) <- c("chrom","size","n_vars")
 chr_counts$vars_per_Mb <- chr_counts$n_vars / (chr_counts$size / 1000000)
 chr_counts$chrom <- factor(chr_counts$chrom, levels = chr_order)
-ancestry <- read.csv(params$ancestry, sep="\t",header=T)
+if (file.exists(params$ancestry)) {
+  ancestry <- read.csv(params$ancestry, sep="\t",header=T)
+} else {
+  ancestry <- data.frame(
+    sample=vcf_stats$PSC, 
+    predicted_ancestry=rep("NO_ANCESTRY", length(vcf_stats$PSC))
+  )
+}
 colnames(ancestry)[1] <- "sample"
 ```
 
