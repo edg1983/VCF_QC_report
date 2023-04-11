@@ -31,13 +31,13 @@ chr_counts$vars_per_Mb <- chr_counts$n_vars / (chr_counts$size / 1000000)
 chr_counts$chrom <- factor(chr_counts$chrom, levels = chr_order)
 if (file.exists(params$ancestry)) {
   ancestry <- read.csv(params$ancestry, sep="\t",header=T)
+  colnames(ancestry)[1] <- "sample"
 } else {
   ancestry <- data.frame(
     sample=vcf_stats$PSC, 
     predicted_ancestry=rep("NO_ANCESTRY", length(vcf_stats$PSC))
   )
 }
-colnames(ancestry)[1] <- "sample"
 ```
 
 # Variant summary
@@ -144,18 +144,18 @@ ggplot(PSC_df, aes(x=sample_order, y=TsTv, color=predicted_ancestry)) + geom_poi
 
 ## Missing and het rate
 ```{r miss_het_rate, echo=F, warning=F, message=F}
-PSC_df<- vcf_stats$PSC %>% mutate(pct_hets = nHets/(nNonRefHom + nHets + nRefHom), pct_missing = nMissing / (nNonRefHom + nRefHom))
+PSC_df<- vcf_stats$PSC %>% mutate(pct_hets = nHets/(nNonRefHom + nHets), pct_missing = nMissing / (nNonRefHom + nRefHom + nHets))
 PSC_df <- merge(PSC_df, ancestry[,c("sample","predicted_ancestry")], by="sample", all.x=T)
-PSC_df$cov_cut <- cut(PSC_df$avg_depth, breaks = c(0,10,20,30,50,max(PSC_df$avg_depth)), include.lowest = T)
+PSC_df$cov_cut <- cut(PSC_df$avg_depth, breaks = c(0,5,10,20,50,max(PSC_df$avg_depth)), include.lowest = T)
 PSC_df <- PSC_df %>% arrange(cov_cut, sample) %>% mutate(sample_order=row_number())
 ggplot(PSC_df, aes(x=reorder(sample_order,cov_cut), y=pct_missing, fill=cov_cut)) + geom_bar(stat="identity") +
-  theme_classic() + scale_y_continuous(breaks=seq(0,0.17,0.02), expand=c(0,0)) +
-  labs(title="Fraction of missing genotypes", fill="Avg depth", x="samples") +
+  theme_classic() + scale_y_continuous(expand=c(0,0)) +
+  labs(title="Fraction of missing genotypes per sample", fill="Avg depth", x="samples") +
   theme(axis.text.x = element_blank(), axis.ticks.x = element_blank())
 PSC_df <- PSC_df %>% arrange(predicted_ancestry, sample) %>% mutate(sample_order=row_number())
 ggplot(PSC_df, aes(x=sample_order, y=pct_hets, fill=predicted_ancestry)) + geom_bar(stat="identity") +
-  theme_classic() + scale_y_continuous(breaks=seq(0,0.17,0.02), expand=c(0,0)) +
-  labs(title="Fraction of het genotypes", fill="Ancestry", x="samples") +
+  theme_classic() + scale_y_continuous(expand=c(0,0)) +
+  labs(title="Per sample het rate", subtitle="hets / (hets + homs)", fill="Ancestry", x="samples") +
   theme(axis.text.x = element_blank(), axis.ticks.x = element_blank())
 ```
 
