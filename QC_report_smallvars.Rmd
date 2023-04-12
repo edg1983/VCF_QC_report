@@ -62,19 +62,20 @@ kable(vcf_stats$TSTV, caption = "Global Ts/Tv stat")
 
 # Var per chrom
 
-```{r var_per_chrom, echo=F}
+```{r var_per_chrom, echo=F, fig.width=10, fig.height=6}
 canonical_chrs <- chr_counts %>% filter(chrom != "chrM", chrom != "chrMT")
 p1 <- ggplot(canonical_chrs, aes(x=chrom, y=vars_per_Mb)) + 
-  geom_bar(stat="identity") + x_axis_text_45 +
-  scale_y_continuous(breaks = seq(0,max(canonical_chrs$vars_per_Mb),2000)) + theme_bw()
+  geom_bar(stat="identity") +
+  scale_y_continuous(breaks = seq(0,max(canonical_chrs$vars_per_Mb),2000)) + 
+  theme_bw() + x_axis_text_45
 
 mt_chrom <- chr_counts %>% filter(chrom == "chrM" | chrom == "chrMT")
 mt_chrom$vars_per_kb <- mt_chrom$n_vars / (mt_chrom$size / 1000)
 p2 <- ggplot(mt_chrom, aes(x=chrom, y=vars_per_kb)) + 
-  geom_bar(stat="identity") + x_axis_text_45 +
-  scale_y_continuous(breaks = seq(0,max(mt_chrom$vars_per_kb),2000)) + theme_bw()
+  geom_bar(stat="identity") + 
+  theme_bw() + x_axis_text_45
 
-p1 | p2
+p1 + p2 + plot_layout(widths = c(2, 1))
 ```
 
 # Var by AF
@@ -86,20 +87,25 @@ AF_df <- AF_df %>% group_by(AF_bin) %>% summarise(SNPs=sum(n_SNPs), indels = sum
 ggplot(AF_df, aes(x=AF_bin, y=n_var/1000000)) + 
   geom_bar(stat="identity") + 
   facet_wrap(~var_type, scales = "free_y") + 
-  x_axis_text_45 + labs(y="M vars", x="cohort AF") +
-  theme_bw()
+  labs(y="M vars", x="cohort AF") +
+  theme_bw() + x_axis_text_45
 ```
 
 # Var by QUAL
 ```{r var_by_QUAL, echo=F}
-QUAL_df <- vcf_stats$QUAL %>% arrange(desc(quality)) %>% mutate(cum_SNPs=cumsum(n_SNPs),cum_indels=cumsum(n_indels)) %>% select(quality, cum_SNPs, cum_indels) %>% gather(key = "var_type", value = "n_var", cum_SNPs:cum_indels)
+QUAL_df <- vcf_stats$QUAL %>% arrange(desc(quality)) %>% 
+  mutate(cum_SNPs=cumsum(n_SNPs),cum_indels=cumsum(n_indels)) %>% 
+  select(quality, cum_SNPs, cum_indels) %>% 
+  gather(key = "var_type", value = "n_var", cum_SNPs:cum_indels)
 ggplot(QUAL_df, aes(x=quality, y=n_var)) + 
   geom_line() + 
   facet_wrap(~var_type, scales = "free_y") + 
   labs(y="N vars QUAL <= x") + labs(title="Cumulative distribution") +
   theme_bw()
 
-QUAL_dist <- vcf_stats$QUAL %>% select(quality, n_SNPs, n_indels) %>% gather(key = "var_type", value = "n_var", n_SNPs:n_indels)
+QUAL_dist <- vcf_stats$QUAL %>% 
+  select(quality, n_SNPs, n_indels) %>% 
+  gather(key = "var_type", value = "n_var", n_SNPs:n_indels)
 ggplot(QUAL_dist, aes(x=quality,y=n_var)) + 
   geom_bar(stat="identity") + 
   facet_wrap(~var_type, scales = "free_y") + 
@@ -110,7 +116,9 @@ ggplot(QUAL_dist, aes(x=quality,y=n_var)) +
 # INDELS size
 ```{r indels_size, echo=F}
 vcf_stats$IDD$length <- as.numeric(vcf_stats$IDD$length)
-INSDEL_df <- vcf_stats$IDD %>% select(length, n_sites, n_genotypes) %>% gather(key = "group", value = "n_var", n_sites:n_genotypes)
+INSDEL_df <- vcf_stats$IDD %>% 
+  select(length, n_sites, n_genotypes) %>% 
+  gather(key = "group", value = "n_var", n_sites:n_genotypes)
 ggplot(INSDEL_df, aes(x=length, y=n_var/1000)) + 
   geom_bar(stat="identity") + 
   facet_wrap(~group, scales = "free_y") + 
@@ -147,7 +155,7 @@ ggplot(vcf_stats$DP %>% filter(bin > 0), aes(x=as.numeric(bin), y=n_genotypes/10
 ```
 
 # Missing data per variant
-```{r missing_data, echo=F}
+```{r missing_data, echo=F, fig.width=10, fig.height=6}
 if (is.null(var_missing)) {
   message("NO VARIANT MISSINGNESS DATA")
 } else {
@@ -171,7 +179,7 @@ ggplot(HWE_df, aes(x=`1st_ALT_AF`, y=Het_fraction, color=group)) + geom_smooth(s
 
 # Per sample statistics
 ## Variant counts
-```{r sample_var_counts, echo=F, warning=F, message=F}
+```{r sample_var_counts, echo=F, warning=F, message=F, fig.width=10, fig.height=6}
 PSC_df <- merge(vcf_stats$PSC,  ancestry[,c("sample","predicted_ancestry")], by="sample", all.x=T)
 PSC_df <- PSC_df %>% select(sample, predicted_ancestry, nNonRefHom, nHets, nIndels) %>%
   mutate(nSNVs=nNonRefHom + nHets) %>% arrange(predicted_ancestry, sample) %>% mutate(sample_order=row_number()) %>%
@@ -196,7 +204,7 @@ ggplot(PSC_df, aes(x=sample_order, y=TsTv, color=predicted_ancestry)) + geom_poi
 ```
 
 ## Missing and het rate
-```{r miss_het_rate, echo=F, warning=F, message=F}
+```{r miss_het_rate, echo=F, warning=F, message=F, fig.width=10, fig.height=6}
 PSC_df<- vcf_stats$PSC %>% mutate(pct_hets = nHets/(nNonRefHom + nHets), pct_missing = nMissing / (nNonRefHom + nRefHom + nHets))
 PSC_df <- merge(PSC_df, ancestry[,c("sample","predicted_ancestry")], by="sample", all.x=T)
 PSC_df$cov_cut <- cut(PSC_df$avg_depth, breaks = c(0,5,10,20,50,max(PSC_df$avg_depth)), include.lowest = T)
@@ -213,7 +221,7 @@ ggplot(PSC_df, aes(x=sample_order, y=pct_hets, fill=predicted_ancestry)) + geom_
 ```
 
 ## Singletons
-```{r singletons, echo=F, warning=F, message=F}
+```{r singletons, echo=F, warning=F, message=F, fig.width=10, fig.height=6}
 PSC_df <- merge(vcf_stats$PSC,  ancestry[,c("sample","predicted_ancestry")], by="sample", all.x=T) %>% 
   arrange(predicted_ancestry, sample) %>% mutate(sample_order=row_number())
 ggplot(PSC_df, aes(x=sample_order, y=nSingletons/1000, fill=predicted_ancestry)) + geom_bar(stat="identity") +
