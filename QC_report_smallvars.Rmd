@@ -55,8 +55,18 @@ kable(vcf_stats$TSTV, caption = "Global Ts/Tv stat")
 # Var per chrom
 
 ```{r var_per_chrom, echo=F}
-ggplot(chr_counts, aes(x=chrom, y=vars_per_Mb)) + geom_bar(stat="identity") + x_axis_text_45 +
-  scale_y_continuous(breaks = seq(0,max(chr_counts$vars_per_Mb),2000))
+canonical_chrs <- chr_counts %>% filter(chrom != "chrM", chrom != "chrMT")
+p1 <- ggplot(canonical_chrs, aes(x=chrom, y=vars_per_Mb)) + 
+  geom_bar(stat="identity") + x_axis_text_45 +
+  scale_y_continuous(breaks = seq(0,max(canonical_chrs$vars_per_Mb),2000)) + theme_bw()
+
+mt_chrom <- chr_counts %>% filter(chrom == "chrM" | chrom == "chrMT")
+mt_chrom$vars_per_kb <- mt_chrom$n_vars / (mt_chrom$size / 1000)
+p2 <- ggplot(mt_chrom, aes(x=chrom, y=vars_per_kb)) + 
+  geom_bar(stat="identity") + x_axis_text_45 +
+  scale_y_continuous(breaks = seq(0,max(mt_chrom$vars_per_kb),2000)) + theme_bw()
+
+p1 | p2
 ```
 
 # Var by AF
@@ -65,27 +75,46 @@ ggplot(chr_counts, aes(x=chrom, y=vars_per_Mb)) + geom_bar(stat="identity") + x_
 AF_df <- vcf_stats$AF %>% select(Allele_freq,n_SNPs,n_indels)
 AF_df$AF_bin <- cut(AF_df$Allele_freq, breaks=c(0,0.01,0.05,0.1,0.25,0.5,1), labels=c("<= 0.01", "1 < x <= 0.05", "0.05 < x <= 0.1", "0.1 < x <= 0.25", "0.25 < x <= 0.5", "0.5 < x <= 1"), include.lowest=T)
 AF_df <- AF_df %>% group_by(AF_bin) %>% summarise(SNPs=sum(n_SNPs), indels = sum(n_indels)) %>% gather(key="var_type", value="n_var", SNPs:indels)
-ggplot(AF_df, aes(x=AF_bin, y=n_var/1000000)) + geom_bar(stat="identity") + facet_wrap(~var_type, scales = "free_y") + x_axis_text_45 + labs(y="M vars", x="cohort AF")
+ggplot(AF_df, aes(x=AF_bin, y=n_var/1000000)) + 
+  geom_bar(stat="identity") + 
+  facet_wrap(~var_type, scales = "free_y") + 
+  x_axis_text_45 + labs(y="M vars", x="cohort AF") +
+  theme_bw()
 ```
 
 # Var by QUAL
 ```{r var_by_QUAL, echo=F}
 QUAL_df <- vcf_stats$QUAL %>% arrange(desc(quality)) %>% mutate(cum_SNPs=cumsum(n_SNPs),cum_indels=cumsum(n_indels)) %>% select(quality, cum_SNPs, cum_indels) %>% gather(key = "var_type", value = "n_var", cum_SNPs:cum_indels)
-ggplot(QUAL_df, aes(x=quality, y=n_var)) + geom_line() + facet_wrap(~var_type, scales = "free_y") + labs(y="N vars QUAL <= x") + labs(title="Cumulative distribution")
+ggplot(QUAL_df, aes(x=quality, y=n_var)) + 
+  geom_line() + 
+  facet_wrap(~var_type, scales = "free_y") + 
+  labs(y="N vars QUAL <= x") + labs(title="Cumulative distribution") +
+  theme_bw()
+
 QUAL_dist <- vcf_stats$QUAL %>% select(quality, n_SNPs, n_indels) %>% gather(key = "var_type", value = "n_var", n_SNPs:n_indels)
-ggplot(QUAL_dist, aes(x=quality,y=n_var)) + geom_bar(stat="identity") + facet_wrap(~var_type, scales = "free_y") + labs(title="Distribution across QUAL")
+ggplot(QUAL_dist, aes(x=quality,y=n_var)) + 
+  geom_bar(stat="identity") + 
+  facet_wrap(~var_type, scales = "free_y") + 
+  labs(title="Distribution across QUAL") + 
+  theme_bw()
 ```
 
 # INDELS size
 ```{r indels_size, echo=F}
 vcf_stats$IDD$length <- as.numeric(vcf_stats$IDD$length)
 INSDEL_df <- vcf_stats$IDD %>% select(length, n_sites, n_genotypes) %>% gather(key = "group", value = "n_var", n_sites:n_genotypes)
-ggplot(INSDEL_df, aes(x=length, y=n_var/1000)) + geom_bar(stat="identity") + facet_wrap(~group, scales = "free_y") + labs(y="N (x1000)")
+ggplot(INSDEL_df, aes(x=length, y=n_var/1000)) + 
+  geom_bar(stat="identity") + 
+  facet_wrap(~group, scales = "free_y") + 
+  labs(y="N (x1000)") +
+  theme_bw()
 ```
 
 # Nucleotide changes
 ```{r nt_changes, echo=F}
-ggplot(vcf_stats$ST, aes(x=type, y=count/1000)) + geom_bar(stat="identity") + labs(y="N vars (x1000)")
+ggplot(vcf_stats$ST, aes(x=type, y=count/1000)) + 
+  geom_bar(stat="identity") + labs(y="N vars (x1000)") +
+  theme_bw()
 ```
 
 # Coverage distribution across genotypes
@@ -99,10 +128,13 @@ ggplot(DP_df, aes(x=as.numeric(bin), y=cum_pct)) +
   geom_line() + geom_vline(xintercept = c(10,20), linetype="dashed") + 
   scale_x_continuous(limits = c(0,100), breaks=seq(0,100,10)) +
   scale_y_continuous(breaks=seq(0,1,0.1)) +
-  labs(x="DP", y="fraction genos with DP >= x", title="Cumulative distribution of genos") 
+  labs(x="DP", y="fraction genos with DP >= x", title="Cumulative distribution of genos") +
+  theme_bw()
+
 ggplot(vcf_stats$DP %>% filter(bin > 0), aes(x=as.numeric(bin), y=n_genotypes/1000000)) + 
   geom_bar(stat="identity") + lims(x=c(0,100)) + 
-  labs(x="DP", y="M genotypes", title = "Distribution across DP")
+  labs(x="DP", y="M genotypes", title = "Distribution across DP") +
+  theme_bw()
 
 ```
 
