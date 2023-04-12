@@ -8,6 +8,7 @@ params:
   vcf_stats: "VCF.stats"
   chr_counts: "VCF_varsPerChrom.stats"
   ancestry: "ancestry.tsv"
+  missingness: "VCF_missingness.txt"
 ---
 
 ```{r setup, include=FALSE, dev="CairoPNG"}
