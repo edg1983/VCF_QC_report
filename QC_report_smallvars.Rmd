@@ -2,13 +2,18 @@
 title: "`r params$doc_title`"
 author: "Edoardo Giacopuzzi"
 date: "`r format(Sys.time(), '%d %B, %Y')`"
-output: html_document
+output: 
+  html_document:
+    toc: true
 params:
   doc_title: "Small variants QC"
-  vcf_stats: "VCF.stats"
-  chr_counts: "VCF_varsPerChrom.stats"
-  ancestry: "ancestry.tsv"
-  missingness: "VCF_missingness.txt"
+  vcf_stats: "variants.stats.txt"
+  chr_counts: "variants.varsPerContig.tsv"
+  ancestry: "samples.ancestry.tsv"
+  additional_info: "variants.additional_info.txt"
+  missing_col: "F_MISSING"
+  af_col: "AF"
+  external_af_col: "gnomAD_AF"
 ---
 
 ```{r setup, include=FALSE, dev="CairoPNG"}
@@ -20,9 +25,57 @@ library(tidyr)
 library(knitr)
 library(patchwork)
 library(data.table)
-source("Read_VCF_stats.R")
+library(scales)
 x_axis_text_45 <- theme(axis.text.x = element_text(angle=45, hjust=1))
 chr_order <- paste("chr",c(1:22,"X","Y","M"), sep = "")
+```
+
+```{r functions, include=FALSE}
+BCFTOOLS_TAGS <- c("AF",
+          "DP",
+          "HWE",
+          "ID",
+          "IDD",
+          "PSC",
+          "PSI",
+          "QUAL",
+          'SN',
+          "ST",
+          "SiS",
+          "TSTV",
+          "VAF")
+
+checkNumbers <- function(values) {
+  if (length(grep("^-?[0-9.]+$", values, perl=T)) == length(values)) {
+    return(TRUE)
+  } else {
+    return(FALSE)
+  }
+}
+
+readVCFstat <- function(stat_file, sep="\t", tags=BCFTOOLS_TAGS, fileID=FALSE) {
+  message("Works with bcftools stats (1.20)")
+  df <- fread(file=params$vcf_stats, sep="\t", header = F, fill=T)
+  res <- list()
+  for (t in tags) {
+    message("Processing ", t)
+    header = df[grepl(paste0("# ",t,"\t"), df$V1), V1]
+    header = unlist(strsplit(header, "\t"))
+    header = gsub("# ", "", header)
+    header = gsub("\\[[0-9]+\\]", "", header)
+    header = gsub(" ", "_", header)
+    header = gsub("-", "_", header)
+    header = gsub("[\\(\\)]","_", header)
+    res[[t]] <- df[grepl(paste0("^",t,"\t"), df$V1)] 
+    res[[t]] <- as.data.table(res[[t]] %>% separate(V1, into = header, sep = "\t"))
+    res[[t]] <- as.data.table(res[[t]] %>% mutate_if(checkNumbers,as.numeric))
+    if (fileID != FALSE) {
+      if (!is.null(res[[t]])) {res[[t]]$dataset <- fileID}
+    }
+  }
+  
+  return(res) 
+}
 ```
 
 ```{r load data, echo=F, include=FALSE}
@@ -40,33 +93,36 @@ if (file.exists(params$ancestry)) {
     predicted_ancestry=rep("NO_ANCESTRY", length(vcf_stats$PSC))
   )
 }
-if (file.exists(params$missingness)) {
-  var_missing <- fread(cmd=paste0("sed 's/#//' ", params$missingness), sep=" ", header=T)
-  colnames(var_missing) <- gsub("\\[[0-9]+\\]","", colnames(var_missing))
+if (file.exists(params$additional_info)) {
+  additional_data <- fread(cmd=paste0("sed 's/#//' ", params$additional_info), sep=" ", header=T)
+  colnames(additional_data) <- gsub("\\[[0-9]+\\]","", colnames(additional_data))
 } else {
-  var_missing <- NULL
+  additional_data <- NULL
 }
 ```
 
-# Variant summary
+## Variant summary
 
-## Variants count 
+### Variants count 
+
 ```{r summary_var, echo=F}
-kable(vcf_stats$SN, caption = "Overall variants count")
+kable(vcf_stats$SN %>% select(key, value), caption = "Overall variants count")
 ```
 
-## Ts/Tv
+### Ts/Tv
+
 ```{r tsv_t , echo=F}
-kable(vcf_stats$TSTV, caption = "Global Ts/Tv stat")
+kable(vcf_stats$TSTV %>% select(-TSTV, -id), caption = "Global Ts/Tv stat")
 ```
 
-# Var per chrom
+## Var per chrom
 
 ```{r var_per_chrom, echo=F, fig.width=10, fig.height=6}
 canonical_chrs <- chr_counts %>% filter(chrom != "chrM", chrom != "chrMT")
 p1 <- ggplot(canonical_chrs, aes(x=chrom, y=vars_per_Mb)) + 
   geom_bar(stat="identity") +
-  scale_y_continuous(breaks = seq(0,max(canonical_chrs$vars_per_Mb),2000)) + 
+  scale_y_continuous(breaks = seq(0,max(canonical_chrs$vars_per_Mb),2000), 
+                     labels = unit_format(unit = "K", scale = 1e-3)) + 
   theme_bw() + x_axis_text_45
 
 mt_chrom <- chr_counts %>% filter(chrom == "chrM" | chrom == "chrMT")
@@ -75,157 +131,303 @@ p2 <- ggplot(mt_chrom, aes(x=chrom, y=vars_per_kb)) +
   geom_bar(stat="identity") + 
   theme_bw() + x_axis_text_45
 
-p1 + p2 + plot_layout(widths = c(2, 1))
+p1 + p2 + plot_layout(widths = c(4, 1))
 ```
 
-# Var by AF
+## Var by AF
 
 ```{r var_by_AF, echo=F}
-AF_df <- vcf_stats$AF %>% select(Allele_freq,n_SNPs,n_indels)
-AF_df$AF_bin <- cut(AF_df$Allele_freq, breaks=c(0,0.01,0.05,0.1,0.25,0.5,1), labels=c("<= 0.01", "1 < x <= 0.05", "0.05 < x <= 0.1", "0.1 < x <= 0.25", "0.25 < x <= 0.5", "0.5 < x <= 1"), include.lowest=T)
-AF_df <- AF_df %>% group_by(AF_bin) %>% summarise(SNPs=sum(n_SNPs), indels = sum(n_indels)) %>% gather(key="var_type", value="n_var", SNPs:indels)
-ggplot(AF_df, aes(x=AF_bin, y=n_var/1000000)) + 
+AF_df <- vcf_stats$AF %>% select(allele_frequency,number_of_SNPs,number_of_indels)
+AF_df$AF_bin <- cut(AF_df$allele_frequency, breaks=c(0,0.001,0.01,0.05,0.1,0.25,0.5,1), labels=c("<= 0.001", "0.001 < x < 0.01", "0.01 < x <= 0.05", "0.05 < x <= 0.1", "0.1 < x <= 0.25", "0.25 < x <= 0.5", "0.5 < x <= 1"), include.lowest=T)
+AF_df <- AF_df %>% group_by(AF_bin) %>% summarise(SNPs=sum(number_of_SNPs), indels = sum(number_of_indels)) %>% gather(key="var_type", value="n_var", SNPs:indels)
+ggplot(AF_df, aes(x=AF_bin, y=n_var)) + 
   geom_bar(stat="identity") + 
   facet_wrap(~var_type, scales = "free_y") + 
-  labs(y="M vars", x="cohort AF") +
+  labs(y="N vars", x="cohort AF") +
+  scale_y_continuous(labels = unit_format(unit = "M", scale = 1e-6)) +
   theme_bw() + x_axis_text_45
 ```
 
-# Var by QUAL
+## Var by QUAL {.tabset}
+
+### Cumulative distribution
+
 ```{r var_by_QUAL, echo=F}
-QUAL_df <- vcf_stats$QUAL %>% arrange(desc(quality)) %>% 
-  mutate(cum_SNPs=cumsum(n_SNPs),cum_indels=cumsum(n_indels)) %>% 
-  select(quality, cum_SNPs, cum_indels) %>% 
+QUAL_df <- vcf_stats$QUAL %>% arrange(desc(Quality)) %>% 
+  mutate(cum_SNPs=cumsum(number_of_SNPs),cum_indels=cumsum(number_of_indels)) %>% 
+  select(Quality, cum_SNPs, cum_indels) %>% 
   gather(key = "var_type", value = "n_var", cum_SNPs:cum_indels)
-ggplot(QUAL_df, aes(x=quality, y=n_var)) + 
+ggplot(QUAL_df, aes(x=Quality, y=n_var)) + 
   geom_line() + 
   facet_wrap(~var_type, scales = "free_y") + 
   labs(y="N vars QUAL <= x") + labs(title="Cumulative distribution") +
   theme_bw()
+```
 
+### Distribution
+
+```{r var_by_QUAL_cum, echo=F}
 QUAL_dist <- vcf_stats$QUAL %>% 
-  select(quality, n_SNPs, n_indels) %>% 
-  gather(key = "var_type", value = "n_var", n_SNPs:n_indels)
-ggplot(QUAL_dist, aes(x=quality,y=n_var)) + 
+  select(Quality, number_of_SNPs, number_of_indels) %>% 
+  gather(key = "var_type", value = "n_var", number_of_SNPs:number_of_indels)
+ggplot(QUAL_dist, aes(x=Quality,y=n_var)) + 
   geom_bar(stat="identity") + 
   facet_wrap(~var_type, scales = "free_y") + 
   labs(title="Distribution across QUAL") + 
   theme_bw()
 ```
 
-# INDELS size
+## INDELS size
+
 ```{r indels_size, echo=F}
-vcf_stats$IDD$length <- as.numeric(vcf_stats$IDD$length)
+#vcf_stats$IDD$length <- as.numeric(vcf_stats$IDD$length)
 INSDEL_df <- vcf_stats$IDD %>% 
-  select(length, n_sites, n_genotypes) %>% 
-  gather(key = "group", value = "n_var", n_sites:n_genotypes)
-ggplot(INSDEL_df, aes(x=length, y=n_var/1000)) + 
+  select(length__deletions_negative_, number_of_sites, number_of_genotypes) %>% 
+  gather(key = "group", value = "n_var", number_of_sites:number_of_genotypes)
+ggplot(INSDEL_df, aes(x=length__deletions_negative_, y=n_var)) + 
   geom_bar(stat="identity") + 
   facet_wrap(~group, scales = "free_y") + 
-  labs(y="N (x1000)") +
+  scale_y_continuous(labels = unit_format(unit = "M", scale = 1e-6)) +
+  labs(y="N indels", x="INDEL length") +
   theme_bw()
 ```
 
-# Nucleotide changes
+## Nucleotide changes
 ```{r nt_changes, echo=F}
 ggplot(vcf_stats$ST, aes(x=type, y=count/1000)) + 
   geom_bar(stat="identity") + labs(y="N vars (x1000)") +
   theme_bw()
 ```
 
-# Coverage distribution across genotypes
+## Coverage distribution across genotypes {.tabset}
 Coverage above 100X not shown
 
-```{r DP_dist, echo=F, warning=F}
+### Cumulative distribution
+
+```{r DP_dist_cum, echo=F, warning=F}
 DP_df <- vcf_stats$DP %>% filter(bin != ">500")
 DP_df$bin <- as.numeric(DP_df$bin)
-DP_df <- DP_df %>% filter(bin > 0) %>% arrange(desc(bin)) %>% mutate(cum_genos=cumsum(n_genotypes), tot_genos=sum(n_genotypes)) %>% select(bin, cum_genos, tot_genos) %>% mutate(cum_pct=cum_genos/tot_genos)
+DP_df <- DP_df %>% filter(bin > 0) %>% arrange(desc(bin)) %>% mutate(cum_genos=cumsum(number_of_genotypes), tot_genos=sum(number_of_genotypes)) %>% select(bin, cum_genos, tot_genos) %>% mutate(cum_pct=cum_genos/tot_genos)
 ggplot(DP_df, aes(x=as.numeric(bin), y=cum_pct)) + 
   geom_line() + geom_vline(xintercept = c(10,20), linetype="dashed") + 
   scale_x_continuous(limits = c(0,100), breaks=seq(0,100,10)) +
   scale_y_continuous(breaks=seq(0,1,0.1)) +
   labs(x="DP", y="fraction genos with DP >= x", title="Cumulative distribution of genos") +
   theme_bw()
+```
 
-ggplot(vcf_stats$DP %>% filter(bin > 0), aes(x=as.numeric(bin), y=n_genotypes/1000000)) + 
+### Distribution
+
+```{r DP_dist, echo=F, warning=F}
+ggplot(vcf_stats$DP %>% filter(bin > 0), aes(x=as.numeric(bin), y=number_of_genotypes)) + 
   geom_bar(stat="identity") + lims(x=c(0,100)) + 
   labs(x="DP", y="M genotypes", title = "Distribution across DP") +
+  scale_y_continuous(labels = unit_format(unit = "M", scale = 1e-6)) +
   theme_bw()
 
 ```
 
-# Missing data per variant
+## Missing data per variant
+
 ```{r missing_data, echo=F, fig.width=10, fig.height=6}
-if (is.null(var_missing)) {
+if (is.null(additional_data)) {
   message("NO VARIANT MISSINGNESS DATA")
 } else {
-ggplot(var_missing, aes(x=F_MISSING)) + 
+additional_data$TYPE <- factor(additional_data$TYPE, levels=c("SNP","INDEL","OTHER"))
+ggplot(additional_data, aes_string(x=params$missing_col)) + 
   geom_histogram(bins=100) + 
+  scale_x_sqrt() +
   labs(title="Missing data per variant", x="fraction missing genotypes", y="N variants") +
   facet_wrap(~TYPE, scales = "free_y") +
   theme_bw()
 }
 ```
 
-# HWE plot
+## HWE plot
+
 ```{r HWE_plot, echo=F, warning=F, message=F}
-HWE_df <- vcf_stats$HWE %>% filter(`1st_ALT_AF` > 0) %>% 
-  mutate(expected_hwe=2*`1st_ALT_AF`*(1-`1st_ALT_AF`)) %>%
+HWE_df <- vcf_stats$HWE %>% filter(`1st_ALT_allele_frequency` > 0) %>% 
+  mutate(expected_hwe=2*`1st_ALT_allele_frequency`*(1-`1st_ALT_allele_frequency`)) %>%
   gather(key="group",value="Het_fraction",`25th_percentile`:expected_hwe)
-ggplot(HWE_df, aes(x=`1st_ALT_AF`, y=Het_fraction, color=group)) + geom_smooth(size=0.8) +
+ggplot(HWE_df, aes(x=`1st_ALT_allele_frequency`, y=Het_fraction, color=group)) + geom_smooth(size=0.8) +
   scale_color_manual(values=c("lightblue","lightblue","orange","blue")) + theme_classic() + 
   labs(color="lines", title="Observed vs expected under HWE")
 ```
 
-# Per sample statistics
-## Variant counts
+## Per sample statistics
+
+### Variant counts
+
 ```{r sample_var_counts, echo=F, warning=F, message=F, fig.width=10, fig.height=6}
 PSC_df <- merge(vcf_stats$PSC,  ancestry[,c("sample","predicted_ancestry")], by="sample", all.x=T)
 PSC_df <- PSC_df %>% select(sample, predicted_ancestry, nNonRefHom, nHets, nIndels) %>%
   mutate(nSNVs=nNonRefHom + nHets) %>% arrange(predicted_ancestry, sample) %>% mutate(sample_order=row_number()) %>%
   gather(key="var_type",value="n_vars", nIndels:nSNVs)
-ggplot(PSC_df, aes(x=sample_order, y=n_vars/1000, fill=predicted_ancestry)) + geom_bar(stat="identity") +
-  theme_classic() + scale_y_continuous(expand=c(0,0)) +
-  labs(title="Per sample variant counts", fill="Ancestry", x="samples", y="N vars (x1000)") +
-  theme(axis.text.x = element_blank(), axis.ticks.x = element_blank()) +
+ggplot(PSC_df, aes(y=n_vars, x=predicted_ancestry)) + geom_boxplot() +
+  theme_bw() + scale_y_continuous(labels = unit_format(unit = "K", scale = 1e-3)) +
+  labs(title="Per sample variant counts", x="Ancestry group", y="N vars") +
   facet_wrap(~var_type, scales = "free_y")
 ```
 
-## Ts/Tv
+### Singletons
+```{r singletons, echo=F, warning=F, message=F, fig.width=10, fig.height=6}
+PSC_df <- merge(vcf_stats$PSC,  ancestry[,c("sample","predicted_ancestry")], by="sample", all.x=T) %>% 
+  arrange(predicted_ancestry, sample) %>% mutate(sample_order=row_number())
+ggplot(PSC_df, aes(y=nSingletons, x=predicted_ancestry)) + geom_boxplot() +
+  theme_bw() + 
+  scale_y_sqrt(breaks=c(seq(0,50000,10000),seq(50000,100000,25000),seq(100000,max(PSC_df$nSingletons),50000)), labels = unit_format(unit = "K", scale = 1e-3)) +
+  labs(title="Per sample singletons counts", x="Ancestry", y="N singletons")
+```
+
+### QC metrics {.tabset}
+
+#### Ts/Tv
 ```{r sample_TsTv, echo=F, warning=F, message=F}
 PSC_df <- merge(vcf_stats$PSC,  ancestry[,c("sample","predicted_ancestry")], by="sample", all.x=T)
 PSC_df <- PSC_df %>% select(sample, predicted_ancestry, nTransitions, nTransversions) %>%
   mutate(TsTv= nTransitions / nTransversions) %>% arrange(predicted_ancestry, sample) %>% mutate(sample_order=row_number())
-ggplot(PSC_df, aes(x=sample_order, y=TsTv, color=predicted_ancestry)) + geom_point() +
-  theme_classic() + scale_y_continuous(limits =c(1.9,2.2),expand=c(0,0)) +
-  labs(title="Per sample Ts/Tv ratio", subtitle="Dashed lines represent expected Ts/Tv for WGS", color="Ancestry", x="samples", y="Ts/Tv") +
-  theme(axis.text.x = element_blank(), axis.ticks.x = element_blank()) +
+ggplot(PSC_df, aes(y=TsTv, x=predicted_ancestry, label=sample)) + geom_boxplot() +
+  theme_bw() + scale_y_continuous(limits =c(1.9,2.2),expand=c(0,0)) +
+  labs(title="Per sample Ts/Tv ratio", subtitle="Dashed lines represent expected Ts/Tv for WGS", x="Ancestry", y="Ts/Tv") +
   geom_hline(yintercept = c(2,2.1), linetype="dashed")
 ```
 
-## Missing and het rate
-```{r miss_het_rate, echo=F, warning=F, message=F, fig.width=10, fig.height=6}
+#### Missing rate and het rate
+
+```{r miss_rate, echo=F, warning=F, message=F, fig.width=10, fig.height=6}
 PSC_df<- vcf_stats$PSC %>% mutate(pct_hets = nHets/(nNonRefHom + nHets), pct_missing = nMissing / (nNonRefHom + nRefHom + nHets))
 PSC_df <- merge(PSC_df, ancestry[,c("sample","predicted_ancestry")], by="sample", all.x=T)
-PSC_df$cov_cut <- cut(PSC_df$avg_depth, breaks = c(0,5,10,20,50,max(PSC_df$avg_depth)), include.lowest = T)
-PSC_df <- PSC_df %>% arrange(cov_cut, sample) %>% mutate(sample_order=row_number())
-ggplot(PSC_df, aes(x=reorder(sample_order,cov_cut), y=pct_missing, fill=cov_cut)) + geom_bar(stat="identity") +
-  theme_classic() + scale_y_continuous(expand=c(0,0)) +
-  labs(title="Fraction of missing genotypes per sample", fill="Avg depth", x="samples") +
-  theme(axis.text.x = element_blank(), axis.ticks.x = element_blank())
-PSC_df <- PSC_df %>% arrange(predicted_ancestry, sample) %>% mutate(sample_order=row_number())
-ggplot(PSC_df, aes(x=sample_order, y=pct_hets, fill=predicted_ancestry)) + geom_bar(stat="identity") +
-  theme_classic() + scale_y_continuous(expand=c(0,0)) +
-  labs(title="Per sample het rate", subtitle="hets / (hets + homs)", fill="Ancestry", x="samples") +
-  theme(axis.text.x = element_blank(), axis.ticks.x = element_blank())
+PSC_df$cov_cut <- cut(PSC_df$average_depth, breaks = c(0,5,10,20,50,max(PSC_df$average_depth)), include.lowest = T)
+#PSC_df <- PSC_df %>% arrange(cov_cut, sample) %>% mutate(sample_order=row_number())
+ggplot(PSC_df, aes(y=pct_missing, x=cov_cut, label=sample)) + geom_boxplot() +
+  theme_bw() + scale_y_continuous(expand=c(0,0)) +
+  labs(title="Fraction of missing genotypes per sample", x="Average depth")
 ```
 
-## Singletons
-```{r singletons, echo=F, warning=F, message=F, fig.width=10, fig.height=6}
-PSC_df <- merge(vcf_stats$PSC,  ancestry[,c("sample","predicted_ancestry")], by="sample", all.x=T) %>% 
-  arrange(predicted_ancestry, sample) %>% mutate(sample_order=row_number())
-ggplot(PSC_df, aes(x=sample_order, y=nSingletons/1000, fill=predicted_ancestry)) + geom_bar(stat="identity") +
-  theme_classic() + scale_y_sqrt(expand=c(0,0), breaks=c(10,20,50,100,200,300)) +
-  labs(title="Per sample singletons counts", fill="Ancestry", x="samples", y="N singletons (x1000)") +
-  theme(axis.text.x = element_blank(), axis.ticks.x = element_blank())
+#### Het rate
+
+```{r het_rate, echo=F, warning=F, message=F, fig.width=10, fig.height=6}
+#PSC_df <- PSC_df %>% arrange(predicted_ancestry, sample) %>% mutate(sample_order=row_number())
+ggplot(PSC_df, aes(y=pct_hets, x=predicted_ancestry, label=sample)) + geom_boxplot() +
+  theme_bw() +
+  labs(title="Per sample het rate", subtitle="hets / (hets + homs)", x="Ancestry")
+```
+
+## Comparison of AF with External population {.tabset}
+
+### AF correlation
+
+```{r ext_AF_correlation, echo=F, warning=F, fig.width=12, fig.height=6}
+if (params$external_af_col %in% colnames(additional_data)) {
+  #Select 1M random rows from additional_data data.table
+  additional_data[[params$external_af_col]] <- as.numeric(additional_data[[params$external_af_col]])
+  additional_data[[params$external_af_col]][is.na(additional_data[[params$external_af_col]])] <- 0
+  
+  snp_data <- additional_data[TYPE == "SNP"]
+  indel_data <- additional_data[TYPE == "INDEL"]
+  
+  set.seed(123)
+  
+  if (nrow(snp_data) > 1e6) {
+    random_rows <- sample(1:nrow(snp_data), 1000000)
+    rnd_snp_data <- snp_data[random_rows]
+  } else {
+    rnd_snp_data <- snp_data
+  }
+  r2_snp <- round(cor(rnd_snp_data[[params$af_col]], rnd_snp_data[[params$external_af_col]], method = "pearson"), 3)
+  p1 <- ggplot(rnd_snp_data, aes_string(y=params$af_col, x=params$external_af_col)) +
+    geom_point(shape=".") + geom_smooth(method="lm") +
+    theme_bw() +
+    labs(title="SNV data", subtitle="Plot limited to 1M random variants") +
+    annotate("text", x=0.12, y=0.9, label=paste0("Pearson R2: ", r2_snp))
+  
+  if (nrow(indel_data) > 1e6) {
+    random_rows <- sample(1:nrow(indel_data), 1000000)
+    rnd_indel_data <- indel_data[random_rows]
+  } else {
+    rnd_indel_data <- indel_data
+  }
+  r2_indel <- round(cor(rnd_indel_data[[params$af_col]], rnd_indel_data[[params$external_af_col]], method = "pearson"), 3)
+  p2 <- ggplot(rnd_indel_data, aes_string(y=params$af_col, x=params$external_af_col)) +
+    geom_point(shape=".") + geom_smooth(method="lm") +
+    theme_bw() +
+    labs(title="INDEL data", subtitle="Plot limited to 1M random variants") +
+    annotate("text", x=0.12, y=0.9, label=paste0("Pearson R2: ", r2_indel))
+  
+  (p1 | p2) + plot_annotation(title="AF comparison with external population")
+} else {
+  message("No external population AF provided")
+}
+
+```
+
+### Cohort-specific variants
+
+```{r cohort_specific_vars, echo=F, warning=F, fig.width=12, fig.height=6}
+if (params$external_af_col %in% colnames(additional_data)) {
+  specific_snps <- snp_data[snp_data[[params$external_af_col]] == 0]
+  specific_indel <- indel_data[indel_data[[params$external_af_col]] == 0]
+  
+  specific_snps$AF_bin <- cut(specific_snps[[params$af_col]], 
+    breaks=c(0,min(specific_snps[[params$af_col]])*2,0.001,0.01,0.05,0.1,0.25,0.5,1), 
+    labels=c("AC1-2","AC2 < x \u2264 0.001", "0.001 < x \u2264 0.01", "0.01 < x \u2264 0.05", "0.05 < x \u2264 0.1", "0.1 < x \u2264 0.25", "0.25 < x \u2264 0.5", "0.5 < x \u2264 1"), 
+    include.lowest=T)
+  specific_indel$AF_bin <- cut(specific_indel[[params$af_col]], 
+    breaks=c(0,min(specific_snps[[params$af_col]])*2,0.001,0.01,0.05,0.1,0.25,0.5,1), 
+    labels=c("AC1-2","AC2 < x \u2264 0.001", "0.001 < x \u2264 0.01", "0.01 < x \u2264 0.05", "0.05 < x \u2264 0.1", "0.1 < x \u2264 0.25", "0.25 < x \u2264 0.5", "0.5 < x \u2264 1"), 
+    include.lowest=T)
+  
+  p1 <- ggplot(specific_snps, aes(x=AF_bin)) +
+    geom_bar() +
+    scale_y_continuous(labels = unit_format(unit = "K", scale = 1e-3)) +
+    theme_bw() + x_axis_text_45 +
+    labs(title="SNV data", subtitle=paste0("Total of ", nrow(specific_snps), " variants"))
+  p2 <- ggplot(specific_indel, aes(x=AF_bin)) +
+    geom_bar() +
+    scale_y_continuous(labels = unit_format(unit = "K", scale = 1e-3)) +
+    theme_bw() + x_axis_text_45 +
+    labs(title="INDEL data", subtitle=paste0("Total of ", nrow(specific_indel), " variants"))
+  
+  (p1 | p2) + plot_annotation(title="AF distribution of cohort specific variants", 
+                              subtitle=paste0("Variant not observed in ", params$external_af_col))
+  
+} else {
+  message("No external population AF provided")
+}
+```
+
+### Cohort-specific cumulative AF
+
+```{r cohort_specific_vars_ecdf, echo=F, warning=F, fig.width=12, fig.height=12}
+if (params$external_af_col %in% colnames(additional_data)) {
+  p1 <- ggplot(specific_snps, aes(x=AF)) +
+    stat_ecdf() +
+    scale_x_sqrt(breaks=c(0,0.01,0.05,0.1,0.25,0.5,1)) +
+    theme_bw() + x_axis_text_45 +
+    labs(title="SNV data", subtitle=paste0("Total of ", nrow(specific_snps), " variants"), 
+         y="Fraction of vars with AF \u2264 X")
+  p2 <- ggplot(specific_indel, aes(x=AF)) +
+    stat_ecdf() +
+    scale_x_sqrt(breaks=c(0,0.01,0.05,0.1,0.25,0.5,1)) +
+    theme_bw() + x_axis_text_45 +
+    labs(title="INDEL data", subtitle=paste0("Total of ", nrow(specific_indel), " variants"),
+         y="Fraction of vars with AF \u2264 X")
+  
+  p3 <- ggplot(specific_snps, aes(x=AF)) +
+    stat_ecdf() +
+    scale_x_sqrt(limits=c(0,0.01), breaks=c(0,0.0001,0.0005,0.001,0.005,0.01)) +
+    theme_bw() + x_axis_text_45 +
+    labs(title="Zoom to AF < 0.01", y="Fraction of vars with AF \u2264 X")
+  p4 <- ggplot(specific_indel, aes(x=AF)) +
+    stat_ecdf() +
+    scale_x_sqrt(limits=c(0,0.01), breaks=c(0,0.0001,0.0005,0.001,0.005,0.01)) +
+    theme_bw() + x_axis_text_45 +
+    labs(title="Zoom to AF < 0.01", y="Fraction of vars with AF \u2264 X")
+  
+  ((p1 | p2) / (p3 | p4)) + plot_annotation(title="Cumulative distribution of AF in cohort-specific variants", 
+                              subtitle=paste0("Variant not observed in ", params$external_af_col))
+  
+} else {
+  message("No external population AF provided")
+}
 ```
